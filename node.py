@@ -1,41 +1,51 @@
 #!/usr/bin/python3
 
 """
-This program initializes two liquid nodes and generates AuthServiceProxy to
-communicate with them.
+This program initializes two liquid clients
+Instructions to setup:
+1. run otctradetool/tools/set_env.sh - (alias: set_env)
+2. run star_liquid_instances.sh - (alias: l1d)
+3. python3 utest.py
 """
+
 import os
-import time
+import json
 import subprocess
 import platform
+import warnings
+import unittest
+
 from bitcoinrpc.authproxy import AuthServiceProxy
 import http.client
+import logging
 
+l1 = None  # bitcoin rpc auth pointer, client 1
+l2 = None
+
+# User define following params
+node1_datadir = '/home/casa/liquiddir1/'
+node2_datadir = '/home/casa/liquiddir2/'
 
 class Node():
-    def __init__(self, datadir):
+    def __init__(self, datadir, name):
         self.datadir = datadir
+        self.name = name
         self.conf = {}
-        self.client = None
+        self.cli = None
+
+        self.start_daemon()
 
     def start_daemon(self):
         """
         Starts liquidd as subprocess, on data dir given by global liq_datadir
         """
+        self.load_conf(self.datadir + 'liquid.conf')
         command = 'liquidd -datadir='+self.datadir
-        print('Starting node... '+command)
+        logging.info('Running: '+command)
         subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
-        self.client = self.get_rpc_connection(self.conf['rpcuser'],
-                                              self.conf['rpcpassword'],
-                                              self.conf['rpcport'])
-
-    def init_node(self):
-        """
-        Wrapper function used to start a liquidd instance
-        """
-        self.load_conf(self.datadir + '/liquid.conf')
-        self.start_daemon()
-        time.sleep(1.0)
+        self.cli = self.get_rpc_connection(self.conf['rpcuser'],
+                                           self.conf['rpcpassword'],
+                                           self.conf['rpcport'])
 
     def load_conf(self, filename):
         """Loads liquid.conf file into a dictionary"""
@@ -45,6 +55,13 @@ class Node():
                     continue
                 self.conf[line.split('=')[0]] = line.split('=')[1].strip()
             self.conf['filename'] = filename
+
+    @staticmethod
+    def wait4sync(c1, c2):
+        while (c1.getblockchaininfo()['bestblockhash'] !=
+               c2.getblockchaininfo()['bestblockhash']):
+            continue
+        return
 
     @staticmethod
     def get_new_rpc_connection(user, password, port):
@@ -148,15 +165,57 @@ class Node():
         return CONNECTION_PARAMS
 
 
+class TestTrade(unittest.TestCase):
+    global l1, l2
+
+    def setUp(self):
+        global node1_datadir, node2_datadir
+
+        warnings.simplefilter('ignore', ResourceWarning)
+        logging_setup("experiments", "DEBUG")
+
+        l1 = Node(node1_datadir, "proposer")
+        l2 = Node(node2_datadir, "respondent")
+
+    def test(self):
+        self.assertEqual(1, 1)
+
+    def tearDown(self):
+        logging.info('Tearing down test environment...')
+
+def logging_setup(filename, level):
+    """Sets logging to file and std. errror"""
+    global l1, l2
+
+    logFormatter = logging.Formatter("%(asctime)s [%(funcName)-6.6s]"
+                                     "[%(levelname)-8.8s]: %(message)s")
+    rootLogger = logging.getLogger()
+    if level is "DEBUG":
+        rootLogger.setLevel(logging.DEBUG)
+    else:
+        rootLogger.setLevel(logging.INFO)
+
+    # Debugging - list of all  logging modules
+    # for key in logging.Logger.manager.loggerDict:
+    #     print("Logging module: ",key)
+
+    # Setting logging levels per module
+    # urlib3 = logging.getLogger('urllib3')
+    # urlib3.setLevel(logging.WARNING)
+    bitcoin_rpc = logging.getLogger('BitcoinRPC')
+    bitcoin_rpc.setLevel(logging.WARNING)
+
+    # Setting up stream handlers
+    logPath = "."
+    fileHandler = logging.FileHandler("{0}/{1}.log".format(logPath, filename))
+    fileHandler.setFormatter(logFormatter)
+    rootLogger.addHandler(fileHandler)
+
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setFormatter(logFormatter)
+    rootLogger.addHandler(consoleHandler)
+
 if __name__ == '__main__':
-    # User define following params
-    node1_datadir = '/home/casa/.liquid/liquid-regtest1/'
-    node2_datadir = '/home/casa/.liquid/liquid-regtest2/'
 
-    l1 = Node(node1_datadir)
-    l2 = Node(node2_datadir)
-    l1.init_node()
-    l2.init_node()
+    unittest.main()
 
-    print(l1.client.getblockchaininfo())
-    print(l2.client.getblockchaininfo())
