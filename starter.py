@@ -5,15 +5,18 @@ This program initializes two liquid clients
 Instructions to setup:
 1. run otctradetool/tools/set_env.sh - (alias: set_env)
 2. run star_liquid_instances.sh - (alias: l1d)
-3. python3 unit-test.py
+3. python3 starter.py
 """
 
 import os
-import json
+import shutil
 import subprocess
 import platform
+import sys
+import time
 import warnings
 import unittest
+import simplejson as json
 
 from bitcoinrpc.authproxy import AuthServiceProxy
 import http.client
@@ -25,6 +28,8 @@ l2 = None
 # User define following params
 node1_datadir = '/home/casa/liquiddir1/'
 node2_datadir = '/home/casa/liquiddir2/'
+
+tools_path = '/home/casa/multisig-example/tools/'
 
 class Node():
     def __init__(self, datadir, name):
@@ -41,7 +46,7 @@ class Node():
         """
         self.load_conf(self.datadir + 'liquid.conf')
         command = 'liquidd -datadir='+self.datadir
-        logging.info('Running: '+command)
+        logging.debug('Running: '+command)
         subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
         self.cli = self.get_rpc_connection(self.conf['rpcuser'],
                                            self.conf['rpcpassword'],
@@ -56,12 +61,7 @@ class Node():
                 self.conf[line.split('=')[0]] = line.split('=')[1].strip()
             self.conf['filename'] = filename
 
-    @staticmethod
-    def wait4sync(c1, c2):
-        while (c1.getblockchaininfo()['bestblockhash'] !=
-               c2.getblockchaininfo()['bestblockhash']):
-            continue
-        return
+
 
     @staticmethod
     def get_new_rpc_connection(user, password, port):
@@ -187,8 +187,7 @@ def logging_setup(filename, level):
     """Sets logging to file and std. errror"""
     global l1, l2
 
-    logFormatter = logging.Formatter("%(asctime)s [%(funcName)-6.6s]"
-                                     "[%(levelname)-8.8s]: %(message)s")
+    logFormatter = logging.Formatter("%(asctime)s [%(levelname)-8.8s]: %(message)s")
     rootLogger = logging.getLogger()
     if level is "DEBUG":
         rootLogger.setLevel(logging.DEBUG)
@@ -215,7 +214,78 @@ def logging_setup(filename, level):
     consoleHandler.setFormatter(logFormatter)
     rootLogger.addHandler(consoleHandler)
 
+def set_up_env():
+    """
+    Setting up testing environment. First calls a bash script that terminates all
+    running liquid daemons with SIGINT (Ctrl+C). Then deletes existing
+    regtest folders as specified in global variables.
+    Creates new folder and copies configuration files.
+    """
+
+    # Terminate (SIGINT) all running liquidd daemons
+    subprocess.call(os.path.join(tools_path, 'killdaemon.sh'))
+
+    # Delete Liquid datadir regtest folders
+    if os.path.isdir(node1_datadir):
+        shutil.rmtree(node1_datadir)
+    if os.path.isdir(node2_datadir):
+        shutil.rmtree(node2_datadir)
+
+    # Create new regtest folders, copy config file
+    os.makedirs(node1_datadir)
+    os.makedirs(node2_datadir)
+    path_src_conf1 = os.path.join(tools_path, 'conf', 'liquid1.conf')
+    path_src_conf2 = os.path.join(tools_path, 'conf', 'liquid2.conf')
+    shutil.copy(path_src_conf1, node1_datadir)
+    shutil.copy(path_src_conf2, node2_datadir)
+    path_dest_conf1 = os.path.join(node1_datadir, 'liquid1.conf')
+    path_dest_conf2 = os.path.join(node2_datadir, 'liquid2.conf')
+    path_renamed_conf1 = os.path.join(node1_datadir, 'liquid.conf')
+    path_renamed_conf2 = os.path.join(node2_datadir, 'liquid.conf')
+    os.rename(path_dest_conf1, path_renamed_conf1)
+    os.rename(path_dest_conf2, path_renamed_conf2)
+
+def wait4sync(c1, c2):
+    logging.debug('Waiting for node to sync...')
+    while True:
+        try:
+            if (c1.getblockchaininfo()['blocks'] ==
+                    c2.getblockchaininfo()['blocks']):
+                break
+        except:
+            pass
+    return
+
+
 if __name__ == '__main__':
 
-    unittest.main()
+    # Initialize logging module
+    warnings.simplefilter('ignore', ResourceWarning)
+    logging_setup("experiments", "DEBUG")
+
+    # Setup testing environment (regtest dirs and conf files)
+    set_up_env()
+    l1 = Node(node1_datadir, "proposer")
+    l2 = Node(node2_datadir, "respondent")
+    wait4sync(l1.cli, l2.cli)
+    logging.debug('Nodes are online...')
+
+    # Initial sanity check
+    balance1 = l1.cli.getbalance()['bitcoin']
+    balance2 = l1.cli.getbalance()['bitcoin']
+    assert(balance1 == balance2)
+
+    # Spend all OP_RETURN TRUE UTXO's from fresh node instance
+    logging.info('All utxo with OP_RETURN True')
+
+    addr = l1.cli.getnewaddress()
+    print(l1.cli.getnewaddress())
+    logging.info('Spend all utxo to user1')
+
+    print("L1 getbalance()")
+    print(json.dumps(l1.cli.getbalance(), indent=4))
+    print("L2 getbalance()")
+    print(json.dumps(l2.cli.getbalance(), indent=4))
+
+
 
